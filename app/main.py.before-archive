@@ -1,0 +1,306 @@
+from pathlib import Path
+import subprocess
+import tempfile
+from urllib.parse import urlparse, unquote
+import re
+
+import httpx
+from fastapi import FastAPI, HTTPException
+from fastapi.responses import FileResponse
+from pydantic import BaseModel, HttpUrl
+
+app = FastAPI(
+    title="MP3 Engine",
+    description="Music link inspection and audio download MVP",
+    version="0.1.0",
+)
+
+DOWNLOAD_DIR = Path("downloads")
+DOWNLOAD_DIR.mkdir(exist_ok=True)
+FFMPEG_EXE = None
+
+AUDIO_TYPES = {
+    "audio/mpeg", "audio/mp3", "audio/mp4", "audio/aac",
+    "audio/ogg", "audio/opus", "audio/wav", "audio/flac",
+    "audio/x-wav", "audio/x-flac", "application/octet-stream",
+}
+
+
+class LinkRequest(BaseModel):
+    url: HttpUrl
+
+
+def safe_filename(value: str) -> str:
+    value = re.sub(r"[^a-zA-Z0-9._ -]", "", value).strip(" .")
+    return (value or "audio")[:120]
+
+
+@app.get("/health")
+def health():
+    return {"status": "ok", "service": "mp3-engine"}
+
+
+@app.post("/api/inspect")
+async def inspect_link(request: LinkRequest):
+    url = str(request.url)
+    parsed = urlparse(url)
+
+    if parsed.scheme not in {"http", "https"}:
+        raise HTTPException(400, "Only HTTP(S) links are supported.")
+
+    try:
+        async with httpx.AsyncClient(
+            follow_redirects=True, timeout=15
+        ) as client:
+            response = await client.get(
+                url,
+                headers={"Range": "bytes=0-0"},
+            )
+            content_type = response.headers.get(
+                "content-type", ""
+            ).split(";")[0].lower()
+
+            return {
+                "url": str(response.url),
+                "status_code": response.status_code,
+                "content_type": content_type,
+                "content_length": response.headers.get("content-length"),
+                "looks_like_audio": (
+                    content_type.startswith("audio/")
+                    or content_type in AUDIO_TYPES
+                ),
+                "note": (
+                    "Direct audio link detected."
+                    if content_type.startswith("audio/")
+                    else "This may be a webpage, not a direct audio file."
+                ),
+            }
+    except httpx.HTTPError as exc:
+        raise HTTPException(400, f"Could not inspect link: {exc}") from exc
+
+
+@app.post("/api/download")
+async def download_audio(request: LinkRequest):
+    url = str(request.url)
+    parsed = urlparse(url)
+
+    if parsed.scheme not in {"http", "https"}:
+        raise HTTPException(400, "Only HTTP(S) links are supported.")
+
+    try:
+        async with httpx.AsyncClient(
+            follow_redirects=True, timeout=60
+        ) as client:
+            async with client.stream("GET", url) as response:
+                response.raise_for_status()
+                content_type = response.headers.get(
+                    "content-type", ""
+                ).split(";")[0].lower()
+
+                if not (
+                    content_type.startswith("audio/")
+                    or content_type in AUDIO_TYPES
+                ):
+                    raise HTTPException(
+                        415,
+                        "The URL did not return an audio file. "
+                        "A song webpage is not a direct audio download.",
+                    )
+
+                filename = safe_filename(
+                    unquote(Path(urlparse(str(response.url)).path).name)
+                )
+                if not Path(filename).suffix:
+                    filename += ".audio"
+
+                destination = DOWNLOAD_DIR / filename
+                total = 0
+                max_bytes = 100 * 1024 * 1024
+
+                with destination.open("wb") as file:
+                    async for chunk in response.aiter_bytes():
+                        total += len(chunk)
+                        if total > max_bytes:
+                            file.close()
+                            destination.unlink(missing_ok=True)
+                            raise HTTPException(
+                                413, "Audio file exceeds the 100 MB limit."
+                            )
+                        file.write(chunk)
+
+        return {
+            "status": "downloaded",
+            "filename": filename,
+            "size_bytes": total,
+            "path": str(destination),
+        }
+    except HTTPException:
+        raise
+    except httpx.HTTPError as exc:
+        raise HTTPException(400, f"Download failed: {exc}") from exc
+
+
+
+@app.post("/api/convert-mp3")
+async def convert_to_mp3(request: LinkRequest):
+    import imageio_ffmpeg
+    import shutil
+
+    url = str(request.url)
+    if urlparse(url).scheme not in {"http", "https"}:
+        raise HTTPException(400, "Only HTTP(S) links are supported.")
+
+    temp_dir = Path(tempfile.mkdtemp(dir=DOWNLOAD_DIR))
+    temp_input = temp_dir / "source.audio"
+    temp_output = temp_dir / "converted.mp3"
+
+    try:
+        total = 0
+        max_bytes = 100 * 1024 * 1024
+
+        async with httpx.AsyncClient(
+            follow_redirects=True, timeout=60
+        ) as client:
+            async with client.stream("GET", url) as response:
+                response.raise_for_status()
+                content_type = response.headers.get(
+                    "content-type", ""
+                ).split(";")[0].lower()
+
+                if not (
+                    content_type.startswith("audio/")
+                    or content_type in AUDIO_TYPES
+                ):
+                    raise HTTPException(
+                        415,
+                        "This URL is not a direct audio file. "
+                        "Use a source that permits audio downloads.",
+                    )
+
+                with temp_input.open("wb") as out:
+                    async for chunk in response.aiter_bytes():
+                        total += len(chunk)
+                        if total > max_bytes:
+                            raise HTTPException(
+                                413, "Audio file exceeds the 100 MB limit."
+                            )
+                        out.write(chunk)
+
+        result = subprocess.run(
+            [
+                imageio_ffmpeg.get_ffmpeg_exe(),
+                "-y", "-i", str(temp_input),
+                "-vn", "-codec:a", "libmp3lame", "-q:a", "2",
+                str(temp_output),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+
+        if result.returncode != 0 or not temp_output.is_file():
+            raise HTTPException(
+                422,
+                "Could not convert this audio to MP3. "
+                "The source may be unsupported or unavailable.",
+            )
+
+        return FileResponse(
+            temp_output,
+            media_type="audio/mpeg",
+            filename="download.mp3",
+            background=__import__("starlette").background.BackgroundTask(
+                shutil.rmtree, temp_dir, ignore_errors=True
+            ),
+        )
+
+    except HTTPException:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+        raise
+    except (httpx.HTTPError, subprocess.TimeoutExpired) as exc:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+        raise HTTPException(400, f"Audio conversion failed: {exc}") from exc
+    except Exception:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+        raise
+
+
+@app.get("/api/files")
+def list_downloads():
+    files = [
+        {
+            "filename": file.name,
+            "size_bytes": file.stat().st_size,
+        }
+        for file in sorted(DOWNLOAD_DIR.iterdir())
+        if file.is_file()
+    ]
+    return {"files": files}
+
+
+@app.get("/api/files/{filename}")
+def get_download(filename: str):
+    safe = safe_filename(filename)
+    path = DOWNLOAD_DIR / safe
+
+    if not path.is_file():
+        raise HTTPException(404, "File not found.")
+
+    return FileResponse(path, filename=path.name)
+
+
+@app.get("/", include_in_schema=False)
+def homepage():
+    return FileResponse("app/index.html")
+
+
+@app.get("/api/search")
+async def search_songs(q: str, limit: int = 10):
+    query = q.strip()
+    if not query:
+        raise HTTPException(status_code=400, detail="Enter a song title or artist.")
+    if len(query) > 200:
+        raise HTTPException(status_code=400, detail="Search query is too long.")
+
+    limit = max(1, min(limit, 25))
+
+    try:
+        async with httpx.AsyncClient(timeout=20) as client:
+            response = await client.get(
+                "https://itunes.apple.com/search",
+                params={
+                    "term": query,
+                    "media": "music",
+                    "entity": "song",
+                    "limit": limit,
+                    "country": "US",
+                },
+            )
+            response.raise_for_status()
+            data = response.json()
+
+        results = []
+        for item in data.get("results", []):
+            results.append({
+                "title": item.get("trackName"),
+                "artist": item.get("artistName"),
+                "album": item.get("collectionName"),
+                "duration_ms": item.get("trackTimeMillis"),
+                "preview_url": item.get("previewUrl"),
+                "artwork_url": item.get("artworkUrl100"),
+                "store_url": item.get("trackViewUrl"),
+                "source": "Apple iTunes",
+            })
+
+        return {
+            "query": query,
+            "count": len(results),
+            "results": results,
+            "note": "Preview URLs are short samples when available, not full-song downloads.",
+        }
+
+    except (httpx.HTTPError, ValueError) as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Music search failed: {exc}",
+        ) from exc

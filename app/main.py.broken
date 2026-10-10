@@ -1,0 +1,111 @@
+
+@app.get("/api/search")
+async def search_songs(q: str, limit: int = 10):
+    query = q.strip()
+
+    if not query:
+        raise HTTPException(400, "Enter a song title or artist.")
+    if len(query) > 200:
+        raise HTTPException(400, "Search query is too long.")
+
+    limit = max(1, min(limit, 25))
+
+    try:
+        async with httpx.AsyncClient(
+            timeout=25,
+            follow_redirects=True,
+        ) as client:
+            response = await client.get(
+                "https://archive.org/advancedsearch.php",
+                params=[
+                    ("q", f'({query}) AND mediatype:audio'),
+                    ("fl[]", "identifier"),
+                    ("fl[]", "title"),
+                    ("fl[]", "creator"),
+                    ("fl[]", "date"),
+                    ("fl[]", "licenseurl"),
+                    ("rows", limit),
+                    ("page", 1),
+                    ("output", "json"),
+                    ("sort[]", "downloads desc"),
+                ],
+            )
+            response.raise_for_status()
+            documents = response.json().get("response", {}).get("docs", [])
+
+            results = []
+
+            for item in documents:
+                identifier = item.get("identifier")
+                if not identifier:
+                    continue
+
+                creator = item.get("creator") or "Unknown creator"
+                if isinstance(creator, list):
+                    creator = ", ".join(str(x) for x in creator[:3])
+
+                download_url = None
+
+                try:
+                    metadata_response = await client.get(
+                        f"https://archive.org/metadata/{identifier}"
+                    )
+                    metadata_response.raise_for_status()
+                    metadata = metadata_response.json()
+
+                    audio_files = []
+                    for file_info in metadata.get("files", []):
+                        name = file_info.get("name", "")
+                        if name.lower().endswith(
+                            (".mp3", ".ogg", ".oga", ".wav",
+                             ".flac", ".m4a", ".aac", ".opus")
+                        ):
+                            audio_files.append(name)
+
+                    audio_files.sort(
+                        key=lambda name: (
+                            0 if name.lower().endswith(".mp3") else 1,
+                            name.lower(),
+                        )
+                    )
+
+                    if audio_files:
+                        from urllib.parse import quote
+                        download_url = (
+                            f"https://archive.org/download/"
+                            f"{quote(identifier, safe='')}/"
+                            f"{quote(audio_files[0], safe='/')}"
+                        )
+
+                except (httpx.HTTPError, ValueError):
+                    pass
+
+                results.append({
+                    "title": item.get("title") or identifier,
+                    "artist": creator,
+                    "album": item.get("date") or "",
+                    "identifier": identifier,
+                    "duration_ms": None,
+                    "preview_url": download_url,
+                    "artwork_url": f"https://archive.org/services/img/{identifier}",
+                    "download_url": download_url,
+                    "license_url": item.get("licenseurl"),
+                    "source_url": f"https://archive.org/details/{identifier}",
+                    "source": "Internet Archive",
+                })
+
+        return {
+            "query": query,
+            "count": len(results),
+            "results": results,
+            "note": (
+                "Audio availability and reuse rights vary by item. "
+                "Check the source's terms before downloading or reusing audio."
+            ),
+        }
+
+    except (httpx.HTTPError, ValueError) as exc:
+        raise HTTPException(
+            502,
+            f"Audio search failed: {exc}",
+        ) from exc

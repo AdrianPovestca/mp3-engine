@@ -1,0 +1,249 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MP3 Engine</title>
+<style>
+:root {
+  color-scheme: dark;
+  --bg: #101010;
+  --panel: #191919;
+  --muted: #999;
+  --text: #f5f5f5;
+  --accent: #c5f36b;
+  --border: #303030;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 16px/1.5 Inter, system-ui, sans-serif;
+}
+main { max-width: 900px; margin: auto; padding: 38px 22px 70px; }
+header {
+  display: flex; align-items: center; gap: 12px;
+  margin-bottom: 90px;
+}
+.logo {
+  display: grid; place-items: center; width: 42px; height: 42px;
+  border-radius: 12px; background: var(--accent); color: #111;
+  font-size: 22px; font-weight: 900;
+}
+.brand { font-weight: 750; letter-spacing: -.5px; font-size: 19px; }
+.tag { color: var(--muted); font-size: 12px; }
+.hero { max-width: 690px; margin: 0 auto 58px; text-align: center; }
+.eyebrow {
+  color: var(--accent); text-transform: uppercase;
+  letter-spacing: 2px; font-size: 11px; font-weight: 700;
+}
+h1 { font-size: clamp(36px, 7vw, 58px); line-height: 1.05; letter-spacing: -2px; margin: 16px 0; }
+.subtitle { color: var(--muted); margin: 0 0 30px; }
+form {
+  display: flex; gap: 10px; padding: 8px;
+  border: 1px solid #414141; border-radius: 16px;
+  background: var(--panel); text-align: left;
+}
+input {
+  min-width: 0; flex: 1; padding: 13px 12px;
+  color: var(--text); background: transparent; border: 0;
+  outline: none; font: inherit;
+}
+button {
+  cursor: pointer; border: 0; border-radius: 11px;
+  padding: 13px 20px; background: var(--accent);
+  color: #111; font: inherit; font-weight: 750;
+}
+button:disabled { opacity: .55; cursor: wait; }
+.hint { color: #777; font-size: 12px; margin-top: 12px; }
+#status { color: var(--muted); min-height: 25px; margin: 20px 0; }
+.results-head { display: flex; justify-content: space-between; align-items: center; }
+h2 { font-size: 18px; }
+#results { display: grid; gap: 12px; }
+.track {
+  display: flex; align-items: center; gap: 14px;
+  padding: 13px; border: 1px solid var(--border);
+  background: var(--panel); border-radius: 14px;
+}
+.cover {
+  width: 66px; height: 66px; object-fit: cover;
+  border-radius: 9px; background: #292929; flex-shrink: 0;
+}
+.track-info { flex: 1; min-width: 0; }
+.track-title { font-weight: 700; overflow-wrap: anywhere; }
+.artist, .album { color: var(--muted); font-size: 13px; }
+.track-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.track-actions a { color: var(--accent); font-size: 13px; text-decoration: none; }
+audio { display: block; width: 100%; max-width: 250px; height: 34px; margin-top: 8px; }
+.empty { padding: 30px; text-align: center; color: var(--muted); border: 1px dashed var(--border); border-radius: 14px; }
+details { margin-top: 70px; border-top: 1px solid var(--border); padding-top: 20px; color: var(--muted); }
+summary { cursor: pointer; color: #ccc; }
+.dev-links { display: flex; flex-wrap: wrap; gap: 16px; margin-top: 15px; }
+.dev-links a { color: var(--accent); font-size: 13px; }
+footer { margin-top: 35px; color: #666; font-size: 12px; text-align: center; }
+@media (max-width: 560px) {
+  main { padding: 24px 15px 50px; }
+  header { margin-bottom: 65px; }
+  form { flex-direction: column; }
+  form button { width: 100%; }
+  .track { align-items: flex-start; gap: 10px; }
+  .cover { width: 54px; height: 54px; }
+  .track-actions { flex-direction: column; align-items: flex-start; }
+  audio { width: 100%; }
+}
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <div class="logo">♫</div>
+    <div>
+      <div class="brand">MP3 Engine</div>
+      <div class="tag">Music search</div>
+    </div>
+  </header>
+
+  <section class="hero">
+    <div class="eyebrow">Find your next track</div>
+    <h1>What do you want to hear?</h1>
+    <p class="subtitle">Search for a song, an artist, or both.</p>
+    <form id="search-form">
+      <input id="query" type="search" placeholder="e.g. The Weeknd Blinding Lights" required maxlength="200">
+      <button id="search-button" type="submit">Search ↗</button>
+    </form>
+    <div class="hint">Search results are provided by Apple Music's public catalog.</div>
+    <div id="status" role="status"></div>
+  </section>
+
+  <section>
+    <div class="results-head">
+      <h2 id="results-title">Discover music</h2>
+    </div>
+    <div id="results">
+      <div class="empty">Search for a song or artist to see results here.</div>
+    </div>
+  </section>
+
+  <details>
+    <summary>Developer tools</summary>
+    <p>Technical endpoints for testing the engine.</p>
+    <div class="dev-links">
+      <a href="/docs">API documentation</a>
+      <a href="/health">Health check</a>
+      <a href="/api/files">Downloaded files</a>
+      <a href="/openapi.json">OpenAPI schema</a>
+    </div>
+  </details>
+
+  <footer>MP3 Engine · Search and preview available tracks</footer>
+</main>
+
+<script>
+const form = document.getElementById("search-form");
+const input = document.getElementById("query");
+const button = document.getElementById("search-button");
+const statusBox = document.getElementById("status");
+const resultsBox = document.getElementById("results");
+const resultsTitle = document.getElementById("results-title");
+
+form.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const query = input.value.trim();
+  if (!query) return;
+
+  button.disabled = true;
+  button.textContent = "Searching…";
+  statusBox.textContent = "Searching the music catalog…";
+  resultsTitle.textContent = "Search results";
+  resultsBox.replaceChildren();
+
+  try {
+    const response = await fetch(
+      "/api/search?q=" + encodeURIComponent(query) + "&limit=10"
+    );
+    const data = await response.json();
+
+    if (!response.ok) {
+      throw new Error(data.detail || "Search failed. Please try again.");
+    }
+
+    if (!data.results || data.results.length === 0) {
+      statusBox.textContent = "";
+      resultsBox.innerHTML =
+        '<div class="empty">No tracks found. Try another title or artist.</div>';
+      return;
+    }
+
+    statusBox.textContent = data.count + " tracks found";
+    for (const track of data.results) {
+      const card = document.createElement("article");
+      card.className = "track";
+
+      const cover = document.createElement("img");
+      cover.className = "cover";
+      cover.alt = "Album cover";
+      cover.loading = "lazy";
+      cover.src = track.artwork_url || "";
+      cover.onerror = () => { cover.style.visibility = "hidden"; };
+
+      const info = document.createElement("div");
+      info.className = "track-info";
+
+      const title = document.createElement("div");
+      title.className = "track-title";
+      title.textContent = track.title || "Unknown title";
+
+      const artist = document.createElement("div");
+      artist.className = "artist";
+      artist.textContent = track.artist || "Unknown artist";
+
+      const album = document.createElement("div");
+      album.className = "album";
+      album.textContent = track.album || "";
+
+      info.append(title, artist, album);
+
+      if (track.preview_url) {
+        const audio = document.createElement("audio");
+        audio.controls = true;
+        audio.preload = "none";
+        audio.src = track.preview_url;
+        audio.setAttribute("aria-label", "Preview " + (track.title || "track"));
+        info.append(audio);
+      } else {
+        const noPreview = document.createElement("div");
+        noPreview.className = "album";
+        noPreview.textContent = "No preview available";
+        info.append(noPreview);
+      }
+
+      const actions = document.createElement("div");
+      actions.className = "track-actions";
+      if (track.store_url) {
+        const link = document.createElement("a");
+        link.href = track.store_url;
+        link.target = "_blank";
+        link.rel = "noopener noreferrer";
+        link.textContent = "Open in store ↗";
+        actions.append(link);
+      }
+
+      card.append(cover, info, actions);
+      resultsBox.append(card);
+    }
+  } catch (error) {
+    statusBox.textContent = "";
+    resultsBox.innerHTML = "";
+    const message = document.createElement("div");
+    message.className = "empty";
+    message.textContent = error.message || "Something went wrong.";
+    resultsBox.append(message);
+  } finally {
+    button.disabled = false;
+    button.textContent = "Search ↗";
+  }
+});
+</script>
+</body>
+</html>

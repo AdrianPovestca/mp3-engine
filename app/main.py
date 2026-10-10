@@ -1,0 +1,253 @@
+from pathlib import Path
+from urllib.parse import urlparse
+import subprocess
+import uuid
+
+import httpx
+import yt_dlp
+from fastapi import FastAPI, HTTPException, UploadFile, File
+from fastapi.responses import FileResponse, HTMLResponse
+from pydantic import BaseModel, HttpUrl
+
+BASE_DIR = Path(__file__).resolve().parent.parent
+APP_DIR = BASE_DIR / "app"
+DOWNLOAD_DIR = BASE_DIR / "downloads"
+DOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)
+
+MAX_FILE_SIZE = 50 * 1024 * 1024
+
+app = FastAPI(title="MP3 Downloader", version="1.1.0")
+
+
+class URLRequest(BaseModel):
+    url: HttpUrl
+
+
+@app.get("/health")
+def health():
+    return {"status": "ok"}
+
+
+@app.get("/", response_class=HTMLResponse)
+def homepage():
+    index_file = APP_DIR / "index.html"
+    if not index_file.exists():
+        raise HTTPException(500, "app/index.html is missing.")
+    return index_file.read_text(encoding="utf-8")
+
+
+@app.get("/api/search")
+def search(q: str, limit: int = 10):
+    q = q.strip()
+    if not q:
+        raise HTTPException(400, "Enter a song or artist.")
+
+    limit = max(1, min(limit, 15))
+
+    options = {
+        "quiet": True,
+        "no_warnings": True,
+        "extract_flat": True,
+        "skip_download": True,
+        "playlistend": limit,
+    }
+
+    try:
+        with yt_dlp.YoutubeDL(options) as ydl:
+            data = ydl.extract_info(
+                f"ytsearch{limit}:{q}",
+                download=False,
+            )
+
+        results = []
+
+        for item in data.get("entries", []):
+            if not item:
+                continue
+
+            video_id = item.get("id")
+            source_url = (
+                f"https://www.youtube.com/watch?v={video_id}"
+                if video_id
+                else item.get("url")
+            )
+
+            results.append({
+                "title": item.get("title") or "Untitled",
+                "artist": (
+                    item.get("channel")
+                    or item.get("uploader")
+                    or ""
+                ),
+                "duration": item.get("duration"),
+                "thumbnail": item.get("thumbnail"),
+                "source_url": source_url,
+            })
+
+        return {"query": q, "results": results}
+
+    except Exception as exc:
+        raise HTTPException(
+            502,
+            f"Search failed: {str(exc)[:250]}",
+        ) from exc
+
+
+@app.post("/api/download")
+async def download_direct(request: URLRequest):
+    url = str(request.url)
+    parsed = urlparse(url)
+
+    if parsed.scheme != "https":
+        raise HTTPException(400, "Use a secure HTTPS URL.")
+
+    allowed_extensions = (
+        ".mp3", ".wav", ".m4a", ".aac",
+        ".ogg", ".flac", ".opus",
+    )
+
+    if not parsed.path.lower().endswith(allowed_extensions):
+        raise HTTPException(
+            400,
+            "Paste a direct HTTPS link to an audio file "
+            "ending in .mp3, .wav, .m4a, .aac, .ogg, .flac or .opus.",
+        )
+
+    source_path = DOWNLOAD_DIR / f"{uuid.uuid4().hex}.source"
+    output_path = DOWNLOAD_DIR / f"{uuid.uuid4().hex}.mp3"
+
+    try:
+        async with httpx.AsyncClient(
+            follow_redirects=True,
+            timeout=60,
+        ) as client:
+            async with client.stream("GET", url) as response:
+                response.raise_for_status()
+
+                content_type = response.headers.get(
+                    "content-type", ""
+                ).lower()
+
+                if not (
+                    content_type.startswith("audio/")
+                    or "application/octet-stream" in content_type
+                    or "binary/octet-stream" in content_type
+                ):
+                    raise HTTPException(
+                        400,
+                        "The URL did not return an audio file. "
+                        "Use a direct audio-file link.",
+                    )
+
+                size = 0
+                with source_path.open("wb") as file:
+                    async for chunk in response.aiter_bytes():
+                        size += len(chunk)
+
+                        if size > MAX_FILE_SIZE:
+                            raise HTTPException(
+                                413,
+                                "Maximum file size is 50 MB.",
+                            )
+
+                        file.write(chunk)
+
+        if not source_path.exists() or source_path.stat().st_size == 0:
+            raise HTTPException(400, "The audio file is empty.")
+
+        convert_to_mp3(source_path, output_path)
+
+        return FileResponse(
+            path=output_path,
+            media_type="audio/mpeg",
+            filename="audio.mp3",
+            background=None,
+        )
+
+    except HTTPException:
+        raise
+
+    except httpx.HTTPStatusError as exc:
+        raise HTTPException(
+            502,
+            f"Audio source returned HTTP {exc.response.status_code}.",
+        ) from exc
+
+    except Exception as exc:
+        raise HTTPException(
+            502,
+            f"Download or conversion failed: {str(exc)[:250]}",
+        ) from exc
+
+    finally:
+        source_path.unlink(missing_ok=True)
+
+
+
+@app.post("/api/convert-upload")
+async def convert_upload(file: UploadFile = File(...)):
+    allowed = {".mp3", ".wav", ".m4a", ".aac", ".ogg", ".flac", ".opus"}
+    extension = Path(file.filename or "").suffix.lower()
+
+    if extension not in allowed:
+        raise HTTPException(400, "Upload an audio file: MP3, WAV, M4A, AAC, OGG, FLAC or OPUS.")
+
+    source = DOWNLOAD_DIR / f"{uuid.uuid4().hex}{extension}"
+    output = DOWNLOAD_DIR / f"{uuid.uuid4().hex}.mp3"
+
+    try:
+        size = 0
+        with source.open("wb") as destination:
+            while True:
+                chunk = await file.read(1024 * 1024)
+                if not chunk:
+                    break
+                size += len(chunk)
+                if size > MAX_FILE_SIZE:
+                    raise HTTPException(413, "Maximum file size is 50 MB.")
+                destination.write(chunk)
+
+        if size == 0:
+            raise HTTPException(400, "The uploaded file is empty.")
+
+        convert_to_mp3(source, output)
+        return FileResponse(
+            path=output,
+            media_type="audio/mpeg",
+            filename="converted.mp3",
+            background=__import__("starlette.background", fromlist=["BackgroundTask"]).BackgroundTask(
+                lambda: output.unlink(missing_ok=True)
+            ),
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(500, f"Conversion failed: {str(exc)[:200]}") from exc
+    finally:
+        source.unlink(missing_ok=True)
+        await file.close()
+
+
+def convert_to_mp3(source: Path, destination: Path):
+    result = subprocess.run(
+        [
+            "ffmpeg",
+            "-y",
+            "-i", str(source),
+            "-vn",
+            "-codec:a", "libmp3lame",
+            "-b:a", "192k",
+            str(destination),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=180,
+    )
+
+    if result.returncode != 0 or not destination.exists():
+        details = (
+            result.stderr[-500:]
+            if result.stderr
+            else "Unknown FFmpeg error."
+        )
+        raise RuntimeError(f"MP3 conversion failed: {details}")

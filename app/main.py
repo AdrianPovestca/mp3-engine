@@ -14,6 +14,7 @@ from pydantic import BaseModel, HttpUrl
 from starlette.background import BackgroundTask
 from starlette.concurrency import run_in_threadpool
 
+
 BASE_DIR = Path(__file__).resolve().parent.parent
 APP_DIR = BASE_DIR / "app"
 DOWNLOAD_DIR = BASE_DIR / "downloads"
@@ -24,46 +25,122 @@ ALLOWED_AUDIO_EXTENSIONS = {
     ".mp3", ".wav", ".m4a", ".aac", ".ogg", ".flac", ".opus"
 }
 YOUTUBE_HOSTS = {
-    "youtube.com", "www.youtube.com", "m.youtube.com",
-    "music.youtube.com", "youtu.be"
+    "youtube.com",
+    "www.youtube.com",
+    "m.youtube.com",
+    "music.youtube.com",
+    "youtu.be",
 }
 
-app = FastAPI(title="MP3 Downloader", version="2.0.0")
+app = FastAPI(title="MP3 Downloader", version="2.1.0")
 
 
 class URLRequest(BaseModel):
     url: HttpUrl
 
 
+def youtube_options():
+    """Options for yt-dlp. Deno and EJS support must be installed."""
+    return {
+        "quiet": True,
+        "no_warnings": True,
+        "noplaylist": True,
+        "socket_timeout": 30,
+        "retries": 2,
+        "extractor_retries": 2,
+        "js_runtimes": {"deno": {}},
+        "remote_components": ["ejs:github"],
+    }
+
+
+def validate_public_https_url(url: str):
+    """Reject non-HTTPS URLs and hosts resolving to private IPs."""
+    parsed = urlparse(url)
+
+    if parsed.scheme != "https" or not parsed.hostname:
+        raise HTTPException(400, "Use a valid HTTPS URL.")
+
+    try:
+        addresses = socket.getaddrinfo(
+            parsed.hostname, parsed.port or 443, type=socket.SOCK_STREAM
+        )
+        if not addresses:
+            raise ValueError("No addresses found")
+
+        for address in addresses:
+            ip = ipaddress.ip_address(address[4][0])
+            if not ip.is_global:
+                raise HTTPException(
+                    400, "Requests to private or local addresses are not allowed."
+                )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(
+            400, "Could not verify the destination host."
+        ) from exc
+
+    return parsed
+
+
+def convert_to_mp3(source: Path, destination: Path):
+    result = subprocess.run(
+        [
+            "ffmpeg",
+            "-nostdin",
+            "-y",
+            "-i", str(source),
+            "-vn",
+            "-codec:a", "libmp3lame",
+            "-b:a", "192k",
+            str(destination),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=180,
+    )
+
+    if result.returncode != 0 or not destination.exists():
+        details = (
+            result.stderr[-400:]
+            if result.stderr
+            else "Unknown FFmpeg error."
+        )
+        raise RuntimeError(f"MP3 conversion failed: {details}")
+
+
 @app.get("/health")
 def health():
-    return {"status": "ok"}
+    return {
+        "status": "ok",
+        "yt_dlp_version": yt_dlp.version.__version__,
+    }
 
 
 @app.get("/", response_class=HTMLResponse)
 def homepage():
     index_file = APP_DIR / "index.html"
+
     if not index_file.exists():
         raise HTTPException(500, "app/index.html is missing.")
+
     return index_file.read_text(encoding="utf-8")
 
 
 @app.get("/api/search")
 async def search(q: str, limit: int = 10):
     q = q.strip()
+
     if not q:
         raise HTTPException(400, "Enter a song or artist.")
 
     limit = max(1, min(limit, 10))
-
-    options = {
-        "quiet": True,
-        "no_warnings": True,
+    options = youtube_options()
+    options.update({
         "extract_flat": True,
         "skip_download": True,
         "playlistend": limit,
-        "noplaylist": True,
-    }
+    })
 
     try:
         def run_search():
@@ -76,7 +153,7 @@ async def search(q: str, limit: int = 10):
         data = await run_in_threadpool(run_search)
         results = []
 
-        for item in data.get("entries", []):
+        for item in (data or {}).get("entries", []):
             if not item:
                 continue
 
@@ -89,7 +166,9 @@ async def search(q: str, limit: int = 10):
 
             results.append({
                 "title": item.get("title") or "Untitled",
-                "artist": item.get("channel") or item.get("uploader") or "",
+                "artist": item.get("channel")
+                or item.get("uploader")
+                or "",
                 "duration": item.get("duration"),
                 "thumbnail": item.get("thumbnail"),
                 "source_url": source_url,
@@ -99,7 +178,8 @@ async def search(q: str, limit: int = 10):
 
     except Exception as exc:
         raise HTTPException(
-            502, f"Search failed: {str(exc)[:200]}"
+            502,
+            f"Search failed: {str(exc)[:300]}",
         ) from exc
 
 
@@ -116,21 +196,17 @@ async def download_youtube(request: URLRequest):
     output_template = str(DOWNLOAD_DIR / f"{job_id}.%(ext)s")
     output_path = DOWNLOAD_DIR / f"{job_id}.mp3"
 
-    options = {
+    options = youtube_options()
+    options.update({
         "format": "bestaudio/best",
         "outtmpl": output_template,
-        "noplaylist": True,
-        "quiet": True,
-        "no_warnings": True,
-        "socket_timeout": 20,
-        "retries": 2,
         "max_filesize": MAX_FILE_SIZE,
         "postprocessors": [{
             "key": "FFmpegExtractAudio",
             "preferredcodec": "mp3",
             "preferredquality": "192",
         }],
-    }
+    })
 
     try:
         def download_audio():
@@ -166,40 +242,36 @@ async def download_youtube(request: URLRequest):
         if isinstance(exc, HTTPException):
             raise
 
+        message = str(exc)
+        if (
+            "Sign in to confirm" in message
+            or "not a bot" in message.lower()
+        ):
+            message = (
+                "YouTube blocked this server and requires verification. "
+                "Updating yt-dlp or installing Deno cannot guarantee a fix. "
+                "Check the Render IP restriction or use another supported "
+                "audio source."
+            )
+
         raise HTTPException(
-            502, f"YouTube conversion failed: {str(exc)[:200]}"
+            502, f"YouTube conversion failed: {message[:300]}"
         ) from exc
 
 
 @app.post("/api/download")
 async def download_direct(request: URLRequest):
     url = str(request.url)
-    parsed = urlparse(url)
-
-    if parsed.scheme != "https" or not parsed.hostname:
-        raise HTTPException(400, "Use a valid HTTPS audio URL.")
+    parsed = validate_public_https_url(url)
 
     extension = Path(parsed.path).suffix.lower()
+
     if extension not in ALLOWED_AUDIO_EXTENSIONS:
         raise HTTPException(
             400,
-            "Use a direct audio URL ending in MP3, WAV, M4A, AAC, "
-            "OGG, FLAC or OPUS. For YouTube links, use the YouTube form."
+            "Use a direct HTTPS audio URL ending in MP3, WAV, M4A, "
+            "AAC, OGG, FLAC or OPUS.",
         )
-
-    # Avoid requests to local/private IP addresses.
-    try:
-        addresses = await run_in_threadpool(
-            socket.getaddrinfo, parsed.hostname, None
-        )
-        for address in addresses:
-            ip = ipaddress.ip_address(address[4][0])
-            if not ip.is_global:
-                raise HTTPException(400, "This audio host is not allowed.")
-    except HTTPException:
-        raise
-    except Exception as exc:
-        raise HTTPException(400, "Could not verify the audio host.") from exc
 
     job_id = uuid.uuid4().hex
     source_path = DOWNLOAD_DIR / f"{job_id}{extension}"
@@ -208,11 +280,18 @@ async def download_direct(request: URLRequest):
     try:
         size = 0
 
+        # Redirects are disabled to prevent redirects to private hosts.
         async with httpx.AsyncClient(
             follow_redirects=False,
             timeout=45,
         ) as client:
             async with client.stream("GET", url) as response:
+                if response.is_redirect:
+                    raise HTTPException(
+                        400,
+                        "This audio URL redirects. Use the final direct URL.",
+                    )
+
                 response.raise_for_status()
                 content_type = response.headers.get(
                     "content-type", ""
@@ -230,16 +309,20 @@ async def download_direct(request: URLRequest):
                 with source_path.open("wb") as file:
                     async for chunk in response.aiter_bytes():
                         size += len(chunk)
+
                         if size > MAX_FILE_SIZE:
                             raise HTTPException(
                                 413, "Maximum file size is 50 MB."
                             )
+
                         file.write(chunk)
 
         if size == 0:
             raise HTTPException(400, "The audio file is empty.")
 
-        await run_in_threadpool(convert_to_mp3, source_path, output_path)
+        await run_in_threadpool(
+            convert_to_mp3, source_path, output_path
+        )
 
         return FileResponse(
             path=output_path,
@@ -251,14 +334,16 @@ async def download_direct(request: URLRequest):
         )
 
     except HTTPException:
+        output_path.unlink(missing_ok=True)
         raise
     except httpx.HTTPStatusError as exc:
         raise HTTPException(
-            502, f"Audio source returned HTTP {exc.response.status_code}."
+            502,
+            f"Audio source returned HTTP {exc.response.status_code}.",
         ) from exc
     except Exception as exc:
         raise HTTPException(
-            502, f"Download or conversion failed: {str(exc)[:200]}"
+            502, f"Download or conversion failed: {str(exc)[:300]}"
         ) from exc
     finally:
         source_path.unlink(missing_ok=True)
@@ -269,9 +354,10 @@ async def convert_upload(file: UploadFile = File(...)):
     extension = Path(file.filename or "").suffix.lower()
 
     if extension not in ALLOWED_AUDIO_EXTENSIONS:
+        await file.close()
         raise HTTPException(
             400,
-            "Upload MP3, WAV, M4A, AAC, OGG, FLAC or OPUS."
+            "Upload MP3, WAV, M4A, AAC, OGG, FLAC or OPUS.",
         )
 
     job_id = uuid.uuid4().hex
@@ -284,19 +370,25 @@ async def convert_upload(file: UploadFile = File(...)):
         with source_path.open("wb") as destination:
             while True:
                 chunk = await file.read(1024 * 1024)
+
                 if not chunk:
                     break
 
                 size += len(chunk)
+
                 if size > MAX_FILE_SIZE:
-                    raise HTTPException(413, "Maximum file size is 50 MB.")
+                    raise HTTPException(
+                        413, "Maximum file size is 50 MB."
+                    )
 
                 destination.write(chunk)
 
         if size == 0:
             raise HTTPException(400, "The uploaded file is empty.")
 
-        await run_in_threadpool(convert_to_mp3, source_path, output_path)
+        await run_in_threadpool(
+            convert_to_mp3, source_path, output_path
+        )
 
         return FileResponse(
             path=output_path,
@@ -308,35 +400,12 @@ async def convert_upload(file: UploadFile = File(...)):
         )
 
     except HTTPException:
+        output_path.unlink(missing_ok=True)
         raise
     except Exception as exc:
         raise HTTPException(
-            500, f"Conversion failed: {str(exc)[:200]}"
+            500, f"Conversion failed: {str(exc)[:300]}"
         ) from exc
     finally:
         source_path.unlink(missing_ok=True)
         await file.close()
-
-
-def convert_to_mp3(source: Path, destination: Path):
-    result = subprocess.run(
-        [
-            "ffmpeg", "-y",
-            "-i", str(source),
-            "-vn",
-            "-codec:a", "libmp3lame",
-            "-b:a", "192k",
-            str(destination),
-        ],
-        capture_output=True,
-        text=True,
-        timeout=180,
-    )
-
-    if result.returncode != 0 or not destination.exists():
-        details = (
-            result.stderr[-400:]
-            if result.stderr
-            else "Unknown FFmpeg error."
-        )
-        raise RuntimeError(f"MP3 conversion failed: {details}")

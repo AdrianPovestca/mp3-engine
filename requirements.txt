@@ -1,4 +1,5 @@
 fastapi
 uvicorn[standard]
 httpx
-yt-dlppython-multipart
+yt-dlp
+python-multipart

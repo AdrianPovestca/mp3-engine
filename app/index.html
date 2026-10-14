@@ -1,9 +1,12 @@
+
 <!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>MP3 Downloader</title>
+<meta name="theme-color" content="#10120f">
+<title>MP3 Engine — Audio Converter</title>
+<meta name="description" content="Convert supported audio files to MP3 and process permitted YouTube audio links.">
 <style>
 :root {
   color-scheme: dark;
@@ -13,104 +16,315 @@
   --text: #f4f4ed;
   --muted: #a1a89d;
   --accent: #b6f36b;
+  --danger: #ff8b8b;
 }
 * { box-sizing: border-box; }
 body {
   margin: 0;
   background: var(--bg);
   color: var(--text);
-  font: 15px/1.5 system-ui, sans-serif;
+  font: 15px/1.6 system-ui, sans-serif;
 }
-main { max-width: 850px; margin: 60px auto; padding: 0 20px; }
-h1 { font-size: clamp(32px, 6vw, 48px); letter-spacing: -2px; margin: 0; }
-.subtitle { color: var(--muted); margin: 8px 0 32px; }
-.panel, .result {
+main {
+  width: min(850px, 100%);
+  margin: 55px auto;
+  padding: 0 20px 40px;
+}
+header { margin-bottom: 30px; }
+.eyebrow {
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 2px;
+  text-transform: uppercase;
+}
+h1 {
+  font-size: clamp(36px, 7vw, 58px);
+  line-height: 1.05;
+  letter-spacing: -2px;
+  margin: 10px 0;
+}
+.subtitle { color: var(--muted); margin: 0; }
+.panel {
   background: var(--panel);
   border: 1px solid var(--line);
   border-radius: 16px;
-  padding: 20px;
-  margin-bottom: 16px;
+  padding: 22px;
+  margin: 18px 0;
 }
-h2 { font-size: 17px; margin: 0 0 14px; }
+h2 { font-size: 18px; margin: 0 0 6px; }
+.description { color: var(--muted); margin: 0 0 17px; font-size: 13px; }
 form { display: flex; gap: 10px; }
 input {
-  min-width: 0; flex: 1; padding: 13px 14px;
-  color: var(--text); background: #10120f;
-  border: 1px solid var(--line); border-radius: 10px;
+  min-width: 0;
+  width: 100%;
+  flex: 1;
+  padding: 14px;
+  color: var(--text);
+  background: #10120f;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  font: inherit;
 }
-button, .link {
-  border: 0; border-radius: 10px; padding: 12px 16px;
-  background: var(--accent); color: #151910;
-  font-weight: 700; cursor: pointer; text-decoration: none;
+input:focus { outline: 2px solid var(--accent); outline-offset: 2px; }
+button, .button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 10px;
+  padding: 13px 16px;
+  background: var(--accent);
+  color: #151910;
+  font: inherit;
+  font-weight: 750;
+  cursor: pointer;
+  text-decoration: none;
+  white-space: nowrap;
 }
-button:disabled { opacity: .5; cursor: wait; }
-.results { display: grid; gap: 12px; }
-.result { display: flex; align-items: center; gap: 14px; margin: 0; }
-.result img { width: 104px; aspect-ratio: 16/9; object-fit: cover; border-radius: 8px; }
+button:disabled { opacity: .55; cursor: wait; }
+.secondary {
+  background: #282e25;
+  border: 1px solid var(--line);
+  color: var(--text);
+}
+.muted { color: var(--muted); font-size: 13px; }
+#status, .form-status {
+  color: var(--muted);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  margin: 15px 0;
+}
+#status.error, .form-status.error { color: var(--danger); }
+.results { display: grid; gap: 12px; margin: 16px 0; }
+.result {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 14px;
+}
+.result img {
+  width: 112px;
+  aspect-ratio: 16/9;
+  object-fit: cover;
+  border-radius: 8px;
+}
 .info { flex: 1; min-width: 0; }
 .info strong { display: block; overflow-wrap: anywhere; }
-.muted { color: var(--muted); font-size: 13px; }
-.actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
+.actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
 .actions a { font-size: 13px; }
-#status { color: var(--muted); margin: 14px 0; white-space: pre-wrap; }
+.player {
+  display: block;
+  width: 100%;
+  max-width: 480px;
+  height: 180px;
+  margin-top: 12px;
+  border: 0;
+  border-radius: 8px;
+}
+.file-input { display: block; width: 100%; margin: 12px 0; }
+footer {
+  color: var(--muted);
+  font-size: 12px;
+  text-align: center;
+  padding: 20px 0;
+}
 @media(max-width: 560px) {
-  main { margin-top: 30px; }
+  main { margin-top: 28px; }
   form { flex-direction: column; }
-  .result { align-items: flex-start; }
-  .result img { width: 84px; }
+  form button { width: 100%; }
+  .result img { width: 82px; }
+  .panel { padding: 17px; }
 }
 </style>
 </head>
 <body>
 <main>
-  <h1>MP3 Downloader</h1>
-  <p class="subtitle">Search tracks. Preview results. Convert audio files you can use.</p>
+  <header>
+    <div class="eyebrow">MP3 Engine</div>
+    <h1>Audio, made simple.</h1>
+    <p class="subtitle">Convert audio to MP3 in a few clicks.</p>
+  </header>
 
   <section class="panel">
-    <h2>Search music</h2>
+    <h2>YouTube to MP3</h2>
+    <p class="description">
+      Paste a YouTube link to process audio you own or are authorized to download.
+    </p>
+    <form id="youtubeForm">
+      <input
+        id="youtubeUrl"
+        type="url"
+        placeholder="https://www.youtube.com/watch?v=..."
+        aria-label="YouTube video URL"
+        required
+      >
+      <button id="youtubeButton" type="submit">Download MP3</button>
+    </form>
+    <p id="youtubeStatus" class="form-status" role="status" aria-live="polite"></p>
+  </section>
+
+  <section class="panel">
+    <h2>Search YouTube</h2>
+    <p class="description">
+      Find a video, preview it, and open its original source.
+    </p>
     <form id="searchForm">
-      <input id="query" placeholder="Song title or artist..." required>
-      <button id="searchButton">Search</button>
+      <input
+        id="query"
+        placeholder="Song title or artist..."
+        aria-label="Search videos"
+        required
+      >
+      <button id="searchButton" type="submit">Search</button>
     </form>
+    <p id="searchStatus" class="form-status" role="status" aria-live="polite"></p>
+    <section id="results" class="results"></section>
   </section>
-
-  <div id="status" role="status"></div>
-  <section id="results" class="results"></section>
 
   <section class="panel">
-    <h2>Convert a direct audio link to MP3</h2>
+    <h2>Convert an audio link</h2>
+    <p class="description">
+      Use a direct HTTPS link to an audio file. Maximum size: 50 MB.
+    </p>
     <form id="downloadForm">
-      <input id="audioUrl" type="url" placeholder="https://example.com/audio.mp3" required>
-      <button id="downloadButton">Convert & download</button>
+      <input
+        id="audioUrl"
+        type="url"
+        placeholder="https://example.com/audio.wav"
+        aria-label="Direct audio URL"
+        required
+      >
+      <button id="downloadButton" type="submit">Convert MP3</button>
     </form>
-    <p class="muted">Use a direct HTTPS audio-file URL. Maximum size: 50 MB.</p>
+    <p id="downloadStatus" class="form-status" role="status" aria-live="polite"></p>
   </section>
+
+  <section class="panel">
+    <h2>Convert an audio file</h2>
+    <p class="description">
+      Upload MP3, WAV, M4A, AAC, OGG, FLAC or OPUS. Maximum size: 50 MB.
+    </p>
+    <form id="uploadForm">
+      <input
+        id="audioFile"
+        class="file-input"
+        type="file"
+        accept=".mp3,.wav,.m4a,.aac,.ogg,.flac,.opus,audio/*"
+        aria-label="Choose audio file"
+        required
+      >
+      <button id="uploadButton" type="submit">Convert &amp; download</button>
+    </form>
+    <p id="uploadStatus" class="form-status" role="status" aria-live="polite"></p>
+  </section>
+
+  <footer>
+    MP3 Engine · Use only audio you have permission to download or convert.
+  </footer>
 </main>
 
 <script>
-const $ = (id) => document.getElementById(id);
-const status = (message) => { $("status").textContent = message; };
+const byId = (id) => document.getElementById(id);
 
-$("searchForm").addEventListener("submit", async (event) => {
+function setStatus(id, message, isError = false) {
+  const element = byId(id);
+  element.textContent = message;
+  element.classList.toggle("error", isError);
+}
+
+async function readError(response) {
+  try {
+    const data = await response.json();
+    return data.detail || "The request failed.";
+  } catch {
+    return "The request failed. Please try again.";
+  }
+}
+
+async function downloadResponse(response, filename) {
+  const blob = await response.blob();
+  const objectUrl = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+
+  link.href = objectUrl;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+
+  setTimeout(() => URL.revokeObjectURL(objectUrl), 2000);
+}
+
+byId("youtubeForm").addEventListener("submit", async (event) => {
   event.preventDefault();
-  const query = $("query").value.trim();
-  if (!query) return;
 
-  $("results").replaceChildren();
-  status("Searching...");
-  $("searchButton").disabled = true;
+  const button = byId("youtubeButton");
+  const url = byId("youtubeUrl").value.trim();
+
+  button.disabled = true;
+  setStatus("youtubeStatus", "Processing the YouTube link. This may take a moment...");
 
   try {
-    const response = await fetch(`/api/search?q=${encodeURIComponent(query)}&limit=10`);
-    const data = await response.json();
-    if (!response.ok) throw new Error(data.detail || "Search failed.");
+    const response = await fetch("/api/youtube-download", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ url })
+    });
 
-    if (!data.results.length) {
-      status("No results found. Try another title or artist.");
+    if (!response.ok) {
+      throw new Error(await readError(response));
+    }
+
+    const disposition = response.headers.get("content-disposition") || "";
+    const match = disposition.match(/filename="?([^";]+)"?/i);
+    const filename = match ? match[1] : "youtube-audio.mp3";
+
+    await downloadResponse(response, filename);
+    setStatus("youtubeStatus", "Your MP3 download has started.");
+  } catch (error) {
+    setStatus(
+      "youtubeStatus",
+      error.message || "YouTube conversion failed.",
+      true
+    );
+  } finally {
+    button.disabled = false;
+  }
+});
+
+byId("searchForm").addEventListener("submit", async (event) => {
+  event.preventDefault();
+
+  const button = byId("searchButton");
+  const query = byId("query").value.trim();
+  const results = byId("results");
+
+  results.replaceChildren();
+  button.disabled = true;
+  setStatus("searchStatus", "Searching YouTube...");
+
+  try {
+    const response = await fetch(
+      `/api/search?q=${encodeURIComponent(query)}&limit=10`
+    );
+
+    if (!response.ok) {
+      throw new Error(await readError(response));
+    }
+
+    const data = await response.json();
+
+    if (!data.results || data.results.length === 0) {
+      setStatus("searchStatus", "No results found. Try another search.");
       return;
     }
 
-    status(`${data.results.length} results found. Open a source to listen.`);
+    setStatus("searchStatus", `${data.results.length} results found.`);
+
     for (const track of data.results) {
       const card = document.createElement("article");
       card.className = "result";
@@ -120,154 +334,139 @@ $("searchForm").addEventListener("submit", async (event) => {
         image.src = track.thumbnail;
         image.alt = "";
         image.loading = "lazy";
-        card.append(image);
+        card.appendChild(image);
       }
 
       const info = document.createElement("div");
       info.className = "info";
 
       const title = document.createElement("strong");
-      title.textContent = track.title;
+      title.textContent = track.title || "Untitled";
+
       const artist = document.createElement("div");
       artist.className = "muted";
-      artist.textContent = track.artist || "YouTube result";
+      artist.textContent = track.artist || "YouTube video";
+
+      info.append(title, artist);
 
       const actions = document.createElement("div");
       actions.className = "actions";
 
       const source = document.createElement("a");
-      source.className = "link";
+      source.className = "button";
       source.href = track.source_url;
       source.target = "_blank";
       source.rel = "noopener noreferrer";
-      source.textContent = "Open source";
+      source.textContent = "Open on YouTube";
+      actions.appendChild(source);
 
-      const videoId = track.source_url.match(/[?&]v=([^&]+)/)?.[1];
+      info.appendChild(actions);
+
+      const videoId = (track.source_url || "").match(
+        /(?:[?&]v=|youtu\.be\/)([A-Za-z0-9_-]{11})/
+      )?.[1];
 
       if (videoId) {
         const player = document.createElement("iframe");
-        player.src = "https://www.youtube-nocookie.com/embed/" + encodeURIComponent(videoId);
-        player.title = track.title;
-        player.width = "100%";
-        player.height = "180";
-        player.style.border = "0";
-        player.allow = "accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share";
-        player.allowFullscreen = true;
+        player.className = "player";
+        player.src =
+          "https://www.youtube-nocookie.com/embed/" +
+          encodeURIComponent(videoId);
+        player.title = track.title || "YouTube preview";
         player.loading = "lazy";
-        info.append(player);
+        player.allow =
+          "accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share";
+        player.allowFullscreen = true;
+        info.appendChild(player);
       }
 
-      actions.append(source);
-      info.append(title, artist, actions);
-      card.append(info);
-      $("results").append(card);
+      card.appendChild(info);
+      results.appendChild(card);
     }
   } catch (error) {
-    status(error.message || "Something went wrong.");
+    setStatus("searchStatus", error.message || "Search failed.", true);
   } finally {
-    $("searchButton").disabled = false;
+    button.disabled = false;
   }
 });
 
-$("downloadForm").addEventListener("submit", async (event) => {
+byId("downloadForm").addEventListener("submit", async (event) => {
   event.preventDefault();
-  const button = $("downloadButton");
+
+  const button = byId("downloadButton");
+  const url = byId("audioUrl").value.trim();
+
   button.disabled = true;
-  status("Downloading and converting...");
+  setStatus("downloadStatus", "Downloading and converting audio...");
+
   try {
     const response = await fetch("/api/download", {
       method: "POST",
-      headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({url: $("audioUrl").value.trim()})
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ url })
     });
 
     if (!response.ok) {
-      const error = await response.json();
-      throw new Error(error.detail || "Conversion failed.");
+      throw new Error(await readError(response));
     }
 
-    const blob = await response.blob();
-    const objectUrl = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    link.href = objectUrl;
-    link.download = "audio.mp3";
-    document.body.append(link);
-    link.click();
-    link.remove();
-    URL.revokeObjectURL(objectUrl);
-    status("MP3 downloaded.");
+    await downloadResponse(response, "audio.mp3");
+    setStatus("downloadStatus", "Your MP3 download has started.");
   } catch (error) {
-    status(error.message || "Download failed.");
+    setStatus(
+      "downloadStatus",
+      error.message || "Audio conversion failed.",
+      true
+    );
+  } finally {
+    button.disabled = false;
+  }
+});
+
+byId("uploadForm").addEventListener("submit", async (event) => {
+  event.preventDefault();
+
+  const button = byId("uploadButton");
+  const file = byId("audioFile").files[0];
+
+  if (!file) {
+    setStatus("uploadStatus", "Choose an audio file first.", true);
+    return;
+  }
+
+  if (file.size > 50 * 1024 * 1024) {
+    setStatus("uploadStatus", "Maximum file size is 50 MB.", true);
+    return;
+  }
+
+  button.disabled = true;
+  setStatus("uploadStatus", "Converting your audio file...");
+
+  try {
+    const formData = new FormData();
+    formData.append("file", file);
+
+    const response = await fetch("/api/convert-upload", {
+      method: "POST",
+      body: formData
+    });
+
+    if (!response.ok) {
+      throw new Error(await readError(response));
+    }
+
+    await downloadResponse(response, "converted.mp3");
+    setStatus("uploadStatus", "Your converted MP3 download has started.");
+  } catch (error) {
+    setStatus(
+      "uploadStatus",
+      error.message || "File conversion failed.",
+      true
+    );
   } finally {
     button.disabled = false;
   }
 });
 </script>
-
-<section class="panel">
-  <h2>Convert audio to MP3</h2>
-  <form id="uploadConvertForm">
-    <input id="uploadAudioFile" type="file"
-      accept=".mp3,.wav,.m4a,.aac,.ogg,.flac,.opus,audio/*" required>
-    <button id="uploadConvertButton" type="submit">Convert &amp; download MP3</button>
-  </form>
-  <p id="uploadConvertStatus" role="status" aria-live="polite"></p>
-  <p class="muted">Audio files up to 50 MB.</p>
-</section>
-
-<script>
-(() => {
-  const form = document.getElementById("uploadConvertForm");
-  if (!form) return;
-
-  form.addEventListener("submit", async (event) => {
-    event.preventDefault();
-
-    const input = document.getElementById("uploadAudioFile");
-    const button = document.getElementById("uploadConvertButton");
-    const status = document.getElementById("uploadConvertStatus");
-    const file = input.files[0];
-
-    if (!file) {
-      status.textContent = "Choose an audio file first.";
-      return;
-    }
-
-    button.disabled = true;
-    status.textContent = "Converting audio…";
-
-    try {
-      const data = new FormData();
-      data.append("file", file);
-
-      const response = await fetch("/api/convert-upload", {
-        method: "POST",
-        body: data
-      });
-
-      if (!response.ok) {
-        const result = await response.json().catch(() => ({}));
-        throw new Error(result.detail || "Conversion failed.");
-      }
-
-      const blob = await response.blob();
-      const url = URL.createObjectURL(blob);
-      const link = document.createElement("a");
-      link.href = url;
-      link.download = "converted.mp3";
-      document.body.appendChild(link);
-      link.click();
-      link.remove();
-      setTimeout(() => URL.revokeObjectURL(url), 1000);
-      status.textContent = "MP3 downloaded.";
-    } catch (error) {
-      status.textContent = error.message || "Something went wrong.";
-    } finally {
-      button.disabled = false;
-    }
-  });
-})();
-</script>
-
 </body>
 </html>
